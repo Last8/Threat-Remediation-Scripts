@@ -1,0 +1,97 @@
+# ============================================================================
+# Script: Verify-ShiftPUPRemoval_Enhanced
+# Purpose: Read-only validation to ensure 100% eradication of "Shift" variants
+# ============================================================================
+
+$VerificationResults = @()
+$IsClean = $true
+
+Write-Host "[+] Starting ENHANCED Post-Remediation Verification Scan..." -ForegroundColor Cyan
+
+# ----------------------------------------------------------------------------
+# 1. PROCESS CHECK (Randomized names)
+# ----------------------------------------------------------------------------
+Write-Host "[*] Checking for active processes..." -ForegroundColor Yellow
+$ShiftProcs = Get-Process | Where-Object {$_.ProcessName -match "(?i)^Shift"}
+
+if ($ShiftProcs) {
+    $IsClean = $false
+    $VerificationResults += [PSCustomObject]@{Category="Process"; Status="INFECTED"; Details="Found active process: $($ShiftProcs[0].ProcessName).exe (PID: $($ShiftProcs[0].Id))"}
+} else {
+    $VerificationResults += [PSCustomObject]@{Category="Process"; Status="CLEAN"; Details="No active Shift processes found"}
+}
+
+# ----------------------------------------------------------------------------
+# 2. SCHEDULED TASK CHECK (Randomized targets)
+# ----------------------------------------------------------------------------
+Write-Host "[*] Checking for scheduled tasks..." -ForegroundColor Yellow
+$SuspiciousTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+    $_.TaskName -match "(?i)Shift" -or $_.Actions.Execute -match "(?i)Shift.*\.exe"
+}
+
+if ($SuspiciousTasks) {
+    $IsClean = $false
+    $VerificationResults += [PSCustomObject]@{Category="Task"; Status="INFECTED"; Details="Found task: $($SuspiciousTasks[0].TaskName)"}
+} else {
+    $VerificationResults += [PSCustomObject]@{Category="Task"; Status="CLEAN"; Details="No malicious scheduled tasks found"}
+}
+
+# ----------------------------------------------------------------------------
+# 3. REGISTRY CHECK (All User Hives & Randomized targets)
+# ----------------------------------------------------------------------------
+Write-Host "[*] Checking Registry Run keys across all user profiles..." -ForegroundColor Yellow
+$RegInfected = $false
+
+$UserHives = Get-ChildItem -Path "Registry::HKEY_USERS" -ErrorAction SilentlyContinue | Where-Object {$_.Name -match "S-1-5-21"}
+foreach ($Hive in $UserHives) {
+    $RunKeyPath = "$($Hive.PSPath)\Software\Microsoft\Windows\CurrentVersion\Run"
+    if (Test-Path $RunKeyPath) {
+        $RunValues = Get-ItemProperty -Path $RunKeyPath -ErrorAction SilentlyContinue
+        
+        $MaliciousProperties = $RunValues | Get-Member -MemberType NoteProperty | Where-Object {
+            $_.Name -match "(?i)ShiftAutoLaunch" -or $RunValues.($_.Name) -match "(?i)Shift.*\.exe"
+        }
+        
+        if ($MaliciousProperties) {
+            $IsClean = $false
+            $RegInfected = $true
+            $VerificationResults += [PSCustomObject]@{Category="Registry"; Status="INFECTED"; Details="Found Run Key in HKU\$($Hive.PSChildName)"}
+        }
+    }
+}
+
+if (-not $RegInfected) {
+    $VerificationResults += [PSCustomObject]@{Category="Registry"; Status="CLEAN"; Details="No malicious Run keys found in any loaded user profile"}
+}
+
+# ----------------------------------------------------------------------------
+# 4. FILE SYSTEM CHECK (AppData & Randomized Downloads)
+# ----------------------------------------------------------------------------
+Write-Host "[*] Checking File System (AppData & Downloads) across all users..." -ForegroundColor Yellow
+
+$ShiftDirs = Get-ChildItem -Path "C:\Users\*\AppData\Local\Shift" -Directory -ErrorAction SilentlyContinue
+$ShiftDownloads = Get-ChildItem -Path "C:\Users\*\Downloads\Shift*.exe" -File -ErrorAction SilentlyContinue
+
+$AllFiles = @()
+if ($ShiftDirs) { $AllFiles += $ShiftDirs }
+if ($ShiftDownloads) { $AllFiles += $ShiftDownloads }
+
+if ($AllFiles.Count -gt 0) {
+    $IsClean = $false
+    $VerificationResults += [PSCustomObject]@{Category="File System"; Status="INFECTED"; Details="Found file/dir: $($AllFiles[0].FullName)"}
+} else {
+    $VerificationResults += [PSCustomObject]@{Category="File System"; Status="CLEAN"; Details="No Shift files or directories found on disk"}
+}
+
+# ----------------------------------------------------------------------------
+# 5. FINAL VERIFICATION SUMMARY
+# ----------------------------------------------------------------------------
+Write-Host "`n========================================================" -ForegroundColor Cyan
+if ($IsClean) {
+    Write-Host " VERIFICATION PASSED: ENDPOINT IS 100% CLEAN" -ForegroundColor Green
+} else {
+    Write-Host " VERIFICATION FAILED: ADWARE REMNANTS DETECTED" -ForegroundColor Red
+}
+Write-Host "========================================================`n" -ForegroundColor Cyan
+
+$VerificationResults | Format-Table -AutoSize -Wrap
