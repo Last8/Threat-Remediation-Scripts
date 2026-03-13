@@ -1,108 +1,122 @@
-$process = Get-Process shift -ErrorAction SilentlyContinue
-if ($process) {
-    $process | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
+# ============================================================================
+# Script: Invoke-ShiftPUPRemediation_Enhanced
+# Purpose: Eradicates "Shift" Adware, including randomized payload drops
+# ============================================================================
+
+$Results = @()
+$DelaySeconds = 3
+
+Write-Host "[+] Starting ENHANCED Shift PUP Eradication Protocol..." -ForegroundColor Cyan
+
+# ----------------------------------------------------------------------------
+# 1. PROCESS TERMINATION: Catch randomized "Shift*.exe" process names
+# ----------------------------------------------------------------------------
+Write-Host "[*] Phase 1: Hunting active 'Shift' processes (including variants)..." -ForegroundColor Yellow
+
+# Use Regex to match any process name starting with "Shift" (case-insensitive)
+$ShiftProcs = Get-Process | Where-Object {$_.ProcessName -match "(?i)^Shift"}
+
+if ($ShiftProcs) {
+    foreach ($Proc in $ShiftProcs) {
+        Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+        $Results += [PSCustomObject]@{Phase="Process"; Action="Killed"; Target="$($Proc.ProcessName).exe (PID: $($Proc.Id))"}
+        Write-Host "  -> Killed $($Proc.ProcessName).exe (PID: $($Proc.Id))" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  -> No active shift processes found." -ForegroundColor DarkGray
 }
-Start-Sleep -Seconds 2
 
-$user_list = Get-Item C:\users\* | Select-Object Name -ExpandProperty Name
-foreach ($user in $user_list) {
-    if ($user -notlike "*Public*") {
-        $paths = @(
-            "C:\Users\$user\AppData\Local\Shift",
-            "C:\Users\$user\Desktop\Shift Browser.lnk",
-            "C:\Users\$user\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Shift\Shift Browser.lnk",
-            "C:\Users\$user\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Shift.lnk"
-        )
+Start-Sleep -Seconds $DelaySeconds
 
-        foreach ($path in $paths) {
-            if (Test-Path -Path $path) {
-                Remove-Item -Path $path -Recurse -Force -ErrorAction SilentlyContinue
-                if (Test-Path -Path $path) {
-                    Write-Host "Failed to remove ShiftBrowser -> $path"
-                }
-            }
+# ----------------------------------------------------------------------------
+# 2. SCHEDULED TASK REMOVAL: Catch tasks executing randomized file names
+# ----------------------------------------------------------------------------
+Write-Host "`n[*] Phase 2: Hunting scheduled tasks..." -ForegroundColor Yellow
+
+# Match task names containing "Shift" OR actions executing "Shift*.exe"
+$SuspiciousTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+    $_.TaskName -match "(?i)Shift" -or $_.Actions.Execute -match "(?i)Shift.*\.exe"
+}
+
+if ($SuspiciousTasks) {
+    foreach ($Task in $SuspiciousTasks) {
+        Unregister-ScheduledTask -TaskName $Task.TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        $Results += [PSCustomObject]@{Phase="Task"; Action="Deleted"; Target=$Task.TaskName}
+        Write-Host "  -> Deleted scheduled task: $($Task.TaskName)" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  -> No matching scheduled tasks found." -ForegroundColor DarkGray
+}
+
+Start-Sleep -Seconds $DelaySeconds
+
+# ----------------------------------------------------------------------------
+# 3. REGISTRY CLEANUP: Catch Run keys pointing to randomized executables
+# ----------------------------------------------------------------------------
+Write-Host "`n[*] Phase 3: Cleaning Registry Run keys across ALL user hives..." -ForegroundColor Yellow
+$RegFound = $false
+
+$UserHives = Get-ChildItem -Path "Registry::HKEY_USERS" -ErrorAction SilentlyContinue | Where-Object {$_.Name -match "S-1-5-21"}
+
+foreach ($Hive in $UserHives) {
+    $RunKeyPath = "$($Hive.PSPath)\Software\Microsoft\Windows\CurrentVersion\Run"
+    if (Test-Path $RunKeyPath) {
+        $RunValues = Get-ItemProperty -Path $RunKeyPath -ErrorAction SilentlyContinue
+        
+        # Match "ShiftAutoLaunch" OR any run key data pointing to "Shift*.exe"
+        $MaliciousProperties = $RunValues | Get-Member -MemberType NoteProperty | Where-Object {
+            $_.Name -match "(?i)ShiftAutoLaunch" -or $RunValues.($_.Name) -match "(?i)Shift.*\.exe"
         }
 
-        $installers = @()
-        $installers = (Get-ChildItem "C:\Users\$user\Downloads\Shift - *.exe") | % { $_.FullName}
-        foreach ($installer in $installers) {
-            if (Test-Path -Path $installer) {
-                Remove-Item -Path $installer -Recurse -Force -ErrorAction SilentlyContinue
-                if (Test-Path -Path $installer) {
-                    Write-Host "Failed to remove ShiftBrowser -> $path"
-                }
-            }
+        foreach ($Prop in $MaliciousProperties) {
+            Remove-ItemProperty -Path $RunKeyPath -Name $Prop.Name -Force -ErrorAction SilentlyContinue
+            $Results += [PSCustomObject]@{Phase="Registry"; Action="Deleted"; Target="HKU\$($Hive.PSChildName)\...\Run\$($Prop.Name)"}
+            Write-Host "  -> Deleted Registry Value for user SID $($Hive.PSChildName)" -ForegroundColor Green
+            $RegFound = $true
         }
     }
 }
 
-$tasks = @(
-    "ShiftLaunchTask"
-)
-foreach ($task in $tasks) {
-    $taskPath = "C:\windows\system32\tasks\$task"
-    if (Test-Path -Path $taskPath) {
-        Remove-Item -Path $taskPath -Recurse -Force -ErrorAction SilentlyContinue
-        if (Test-Path -Path $taskPath) {
-            Write-Host "Failed to remove ShiftBrowser task -> $taskPath"
-        }
-    }
+if (-not $RegFound) {
+    Write-Host "  -> No malicious registry keys found." -ForegroundColor DarkGray
 }
 
-$sid_list = Get-Item -Path "Registry::HKU\S-*" | Select-String -Pattern "S-\d-(?:\d+-){5,14}\d+" | ForEach-Object { $_.ToString().Trim() }
+Start-Sleep -Seconds $DelaySeconds
 
-foreach ($sid in $sid_list) {
-    if ($sid -notlike "*_Classes*") {
-        $registryPaths = @(
-            "Registry::$sid\Software\Shift",
-            "Registry::$sid\SOFTWARE\Clients\StartMenuInternet\Shift",
-            "Registry::$sid\Software\Classes\ShiftHTML",
-            "Registry::$sid\Software\Microsoft\Windows\CurrentVersion\Uninstall\{95fcf903-63b1-44bd-ab77-358a5bd30aae}_is1",
-            "Registry::$sid\SOFTWARE\Classes\CLSID\{635EFA6F-08D6-4EC9-BD14-8A0FDE975159}"
-        )
+# ----------------------------------------------------------------------------
+# 4. FILE SYSTEM CLEANUP: Target AppData AND Randomized Downloads
+# ----------------------------------------------------------------------------
+Write-Host "`n[*] Phase 4: Cleaning File System (AppData & Downloads)..." -ForegroundColor Yellow
 
-        foreach ($regPath in $registryPaths) {
-            if (Test-Path -Path $regPath) {
-                Remove-Item -Path $regPath -Recurse -Force -ErrorAction SilentlyContinue
-                if (Test-Path -Path $regPath) {
-                    Write-Host "Failed to remove ShiftBrowser -> $regPath"
-                }
-            }
-        }
+# 4A. Target the installed AppData directories
+$ShiftDirs = Get-ChildItem -Path "C:\Users\*\AppData\Local\Shift" -Directory -ErrorAction SilentlyContinue
 
-        $runKeys = @("ShiftAutoLaunch_E5A4D1242AD7DFAA7BA68197713C983F","GoogleChromeAutoLaunch_E5964F24A764F40CAB0A4B52CD44BC66")
-        foreach ($runKey in $runKeys) {
-            $keypath = "Registry::$sid\Software\Microsoft\Windows\CurrentVersion\Run"
-            if ((Get-ItemProperty -Path $keypath -Name $runKey -ErrorAction SilentlyContinue)) {
-                Remove-ItemProperty -Path $keypath -Name $runKey -ErrorAction SilentlyContinue
-                if ((Get-ItemProperty -Path $keypath -Name $runKey -ErrorAction SilentlyContinue)) {
-                    Write-Host "Failed to remove ShiftBrowser -> $keypath.$runKey"
-                }
-            }
-        }
+# 4B. Target the downloaded installer/payload variants (e.g., "Shift - PDF_xjsh88.exe")
+$ShiftDownloads = Get-ChildItem -Path "C:\Users\*\Downloads\Shift*.exe" -File -ErrorAction SilentlyContinue
 
-        $registeredApplications = @("Shift")
-        foreach ($regApp in $registeredApplications) {
-            $keypath = "Registry::$sid\SOFTWARE\RegisteredApplications"
-            if ((Get-ItemProperty -Path $keypath -Name $regApp -ErrorAction SilentlyContinue)) {
-                Remove-ItemProperty -Path $keypath -Name $regApp -ErrorAction SilentlyContinue
-                if ((Get-ItemProperty -Path $keypath -Name $regApp -ErrorAction SilentlyContinue)) {
-                    Write-Host "Failed to remove ShiftBrowser -> $keypath.$regApp"
-                }
-            }
-        }
+$AllFiles = @()
+if ($ShiftDirs) { $AllFiles += $ShiftDirs }
+if ($ShiftDownloads) { $AllFiles += $ShiftDownloads }
 
-
+if ($AllFiles.Count -gt 0) {
+    foreach ($Item in $AllFiles) {
+        $PathToRemove = $Item.FullName
+        Remove-Item -Path $PathToRemove -Recurse -Force -ErrorAction SilentlyContinue
+        $Results += [PSCustomObject]@{Phase="File System"; Action="Deleted"; Target=$PathToRemove}
+        Write-Host "  -> Deleted Target: $PathToRemove" -ForegroundColor Green
     }
+} else {
+    Write-Host "  -> No malicious files or directories found on disk." -ForegroundColor DarkGray
 }
 
-$taskCacheKeys = @(
-    "Registry::HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks\{E88F1AB4-6648-4E46-8256-20EBDB550948}",
-    "Registry::HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\ShiftLaunchTask"
-)
-foreach ($taskCacheKey in $taskCacheKeys) {
-    if (Test-Path -Path $taskCacheKey) {
-        Remove-Item -Path $taskCacheKey -Recurse -ErrorAction SilentlyContinue
-    }
+# ----------------------------------------------------------------------------
+# 5. SUMMARY
+# ----------------------------------------------------------------------------
+Write-Host "`n[+] Remediation Protocol Complete!" -ForegroundColor Cyan
+
+if ($Results.Count -gt 0) {
+    Write-Host "Summary of removed items:" -ForegroundColor White
+    $Results | Format-Table -AutoSize -Wrap
+} else {
+    Write-Host "[-] System appears clean. No adware artifacts were found or removed." -ForegroundColor Green
 }
