@@ -1,0 +1,60 @@
+<#
+.SYNOPSIS
+    Validates Edge notification remediation status across policy and user data directories.
+#>
+
+$overallPass = $true
+Write-Output "=== Starting Edge Remediation Validation ==="
+
+# 1. Validate HKLM Enterprise Policy
+$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+$policyName = "DefaultNotificationsSetting"
+
+if (Test-Path $policyPath) {
+    $policyValue = (Get-ItemProperty -Path $policyPath -Name $policyName -ErrorAction SilentlyContinue).$policyName
+    if ($policyValue -eq 2) {
+        Write-Output "[PASS] Machine policy 'DefaultNotificationsSetting' is enforced (Value: 2 - Block all)."
+    } else {
+        Write-Output "[FAIL] Machine policy value is unexpected: $policyValue (Expected: 2)."
+        $overallPass = $false
+    }
+} else {
+    Write-Output "[FAIL] Policy registry key '$policyPath' does not exist."
+    $overallPass = $false
+}
+
+# 2. Inspect Edge User Profiles for Residual Workers/Artifacts
+$userProfiles = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch '^(Public|Default|All Users)$' }
+
+foreach ($user in $userProfiles) {
+    $edgeUserDir = Join-Path $user.FullName "AppData\Local\Microsoft\Edge\User Data"
+    
+    if (Test-Path $edgeUserDir) {
+        $profiles = Get-ChildItem -Path $edgeUserDir -Directory | Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" }
+        
+        foreach ($profile in $profiles) {
+            $swPath = Join-Path $profile.FullName "Service Worker"
+            $pnPath = Join-Path $profile.FullName "Platform Notifications"
+            
+            if (Test-Path $swPath) {
+                Write-Output "[WARN] Residual Service Worker directory present: $swPath"
+            } else {
+                Write-Output "[PASS] Clean: No active Service Worker cache found in $($profile.FullName)."
+            }
+
+            if (Test-Path $pnPath) {
+                Write-Output "[WARN] Residual Platform Notifications directory present: $pnPath"
+            } else {
+                Write-Output "[PASS] Clean: No Platform Notifications cache found in $($profile.FullName)."
+            }
+        }
+    }
+}
+
+# 3. Final Status Assessment
+Write-Output "==========================================="
+if ($overallPass) {
+    Write-Output "[RESULT] VALIDATION SUCCESSFUL: Notification policy is active."
+} else {
+    Write-Output "[RESULT] VALIDATION FAILED: Policy has not been applied properly."
+}
