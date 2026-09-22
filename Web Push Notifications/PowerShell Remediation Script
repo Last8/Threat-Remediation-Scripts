@@ -1,0 +1,48 @@
+<#
+.SYNOPSIS
+    Remediate fake antivirus / web push notification spam in Microsoft Edge.
+#>
+
+Write-Output "[*] Terminating Microsoft Edge processes..."
+Get-Process -Name "msedge" -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 2
+
+# 1. Enforce machine-wide Edge policy to block all site push notifications
+# Value 2 = Don't allow any site to show desktop notifications
+Write-Output "[*] Applying Edge enterprise policy to disable web push notifications..."
+$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+if (-not (Test-Path $policyPath)) {
+    New-Item -Path $policyPath -Force | Out-Null
+}
+Set-ItemProperty -Path $policyPath -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
+
+# 2. Iterate through user profiles and purge persistent notification data & service workers
+Write-Output "[*] Clearing notification state and Service Workers from user profiles..."
+$userProfiles = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch '^(Public|Default|All Users)$' }
+
+foreach ($user in $userProfiles) {
+    $edgeUserDir = Join-Path $user.FullName "AppData\Local\Microsoft\Edge\User Data"
+    
+    if (Test-Path $edgeUserDir) {
+        # Check Default profile as well as numbered Profile directories (Profile 1, Profile 2, etc.)
+        $profiles = Get-ChildItem -Path $edgeUserDir -Directory | Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" }
+        
+        foreach ($profile in $profiles) {
+            # Purge Service Worker storage (frequently used by malicious sites to trigger push events)
+            $serviceWorkerPath = Join-Path $profile.FullName "Service Worker"
+            if (Test-Path $serviceWorkerPath) {
+                Remove-Item -Path $serviceWorkerPath -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Output "    [-] Cleared Service Worker cache: $($serviceWorkerPath)"
+            }
+
+            # Purge Platform Notifications leveldb directory
+            $platformNotificationsPath = Join-Path $profile.FullName "Platform Notifications"
+            if (Test-Path $platformNotificationsPath) {
+                Remove-Item -Path $platformNotificationsPath -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Output "    [-] Cleared Platform Notifications: $($platformNotificationsPath)"
+            }
+        }
+    }
+}
+
+Write-Output "[+] Remediation complete. Web push notifications disabled."
