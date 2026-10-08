@@ -1,48 +1,79 @@
 <#
 .SYNOPSIS
-    Remediate fake antivirus / web push notification spam in Microsoft Edge.
+    Consolidated remediation for rogue push notifications and scareware in Microsoft Edge and Google Chrome.
+.DESCRIPTION
+    1. Terminates running browser processes to release LevelDB file locks.
+    2. Enforces HKLM enterprise policies (DefaultNotificationsSetting = 2) to block all site push requests.
+    3. Traverses every user profile on the machine and wipes Service Worker and Platform Notifications storage.
 #>
 
-Write-Output "[*] Terminating Microsoft Edge processes..."
-Get-Process -Name "msedge" -ErrorAction SilentlyContinue | Stop-Process -Force
+[CmdletBinding()]
+param()
+
+$Browsers = @(
+    @{
+        Name       = "Microsoft Edge"
+        Process    = "msedge"
+        PolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+        UserData   = "AppData\Local\Microsoft\Edge\User Data"
+    },
+    @{
+        Name       = "Google Chrome"
+        Process    = "chrome"
+        PolicyPath = "HKLM:\SOFTWARE\Policies\Google\Chrome"
+        UserData   = "AppData\Local\Google\Chrome\User Data"
+    }
+)
+
+# Step 1: Kill browser processes
+Write-Output "[*] Terminating active browser instances..."
+foreach ($browser in $Browsers) {
+    $running = Get-Process -Name $browser.Process -ErrorAction SilentlyContinue
+    if ($running) {
+        $running | Stop-Process -Force
+        Write-Output "    [-] Killed $($browser.Name) ($($browser.Process).exe)"
+    }
+}
 Start-Sleep -Seconds 2
 
-# 1. Enforce machine-wide Edge policy to block all site push notifications
-# Value 2 = Don't allow any site to show desktop notifications
-Write-Output "[*] Applying Edge enterprise policy to disable web push notifications..."
-$policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
-if (-not (Test-Path $policyPath)) {
-    New-Item -Path $policyPath -Force | Out-Null
+# Step 2: Apply enterprise registry policies
+Write-Output "[*] Applying enterprise lockdown policies (DefaultNotificationsSetting = 2)..."
+foreach ($browser in $Browsers) {
+    if (-not (Test-Path $browser.PolicyPath)) {
+        New-Item -Path $browser.PolicyPath -Force | Out-Null
+    }
+    Set-ItemProperty -Path $browser.PolicyPath -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
+    Write-Output "    [+] Policy enforced: $($browser.PolicyPath)"
 }
-Set-ItemProperty -Path $policyPath -Name "DefaultNotificationsSetting" -Value 2 -Type DWord -Force
 
-# 2. Iterate through user profiles and purge persistent notification data & service workers
-Write-Output "[*] Clearing notification state and Service Workers from user profiles..."
+# Step 3: Purge persistent notification storage across all user profiles
+Write-Output "[*] Purging notification storage across user profiles..."
 $userProfiles = Get-ChildItem "C:\Users" -Directory | Where-Object { $_.Name -notmatch '^(Public|Default|All Users)$' }
 
 foreach ($user in $userProfiles) {
-    $edgeUserDir = Join-Path $user.FullName "AppData\Local\Microsoft\Edge\User Data"
-    
-    if (Test-Path $edgeUserDir) {
-        # Check Default profile as well as numbered Profile directories (Profile 1, Profile 2, etc.)
-        $profiles = Get-ChildItem -Path $edgeUserDir -Directory | Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" }
+    foreach ($browser in $Browsers) {
+        $userDataPath = Join-Path $user.FullName $browser.UserData
         
-        foreach ($profile in $profiles) {
-            # Purge Service Worker storage (frequently used by malicious sites to trigger push events)
-            $serviceWorkerPath = Join-Path $profile.FullName "Service Worker"
-            if (Test-Path $serviceWorkerPath) {
-                Remove-Item -Path $serviceWorkerPath -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Output "    [-] Cleared Service Worker cache: $($serviceWorkerPath)"
-            }
+        if (Test-Path $userDataPath) {
+            $profiles = Get-ChildItem -Path $userDataPath -Directory | Where-Object { $_.Name -eq "Default" -or $_.Name -like "Profile *" }
+            
+            foreach ($profile in $profiles) {
+                # Clear Service Workers (background push engines)
+                $swPath = Join-Path $profile.FullName "Service Worker"
+                if (Test-Path $swPath) {
+                    Remove-Item -Path $swPath -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Output "    [-] Purged Service Worker: $swPath"
+                }
 
-            # Purge Platform Notifications leveldb directory
-            $platformNotificationsPath = Join-Path $profile.FullName "Platform Notifications"
-            if (Test-Path $platformNotificationsPath) {
-                Remove-Item -Path $platformNotificationsPath -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Output "    [-] Cleared Platform Notifications: $($platformNotificationsPath)"
+                # Clear Platform Notifications (cached notification database)
+                $pnPath = Join-Path $profile.FullName "Platform Notifications"
+                if (Test-Path $pnPath) {
+                    Remove-Item -Path $pnPath -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Output "    [-] Purged Platform Notifications: $pnPath"
+                }
             }
         }
     }
 }
 
-Write-Output "[+] Remediation complete. Web push notifications disabled."
+Write-Output "[+] Remediation successfully completed for Edge and Chrome."
